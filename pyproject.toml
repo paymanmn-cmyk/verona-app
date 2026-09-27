@@ -1,0 +1,13 @@
+   [project]
+   name = "verona-app"
+   version = "0.1.0"
+   description = "Verona Schedule App"
+   dependencies = [
+       "flet",
+       "jdatetime",
+   ]
+
+   [tool.flet]
+   org = "com.verona"
+   product = "Verona"
+   company = "Verona"
