@@ -1,50 +1,35 @@
-name: Build Verona APK
+name: Build Android APK
 
 on:
+  push:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-
-      - name: Install Dependencies
+      - name: Install dependencies & Flet CLI
         run: |
           python -m pip install --upgrade pip
-          pip install flet jdatetime
+          pip install flet-cli
 
-      - name: Build APK (Non-Interactive)
+      - name: Build APK
         env:
           CI: "true"
         run: |
-          # ارسال خودکار پاسخ مثبت در صورت نیاز به دانلود ابزارها
-          yes | flet build apk --project . -v || flet build apk -v
+          yes | flet build apk --project verona --org com.veronasharing.app
 
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Verona-App-APK
-          path: |
-            build/apk/*.apk
-            dist/*.apk
-            build/*.apk
-            **/*.apk
-          if-no-files-found: warn
+          name: verona-app
+          path: build/apk/*.apk
