@@ -10,21 +10,41 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build APK
-        id: build
-        uses: flet-dev/flet-build-action@v1
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          target: apk
-          runner-python-version: "3.11"
-          bundled-python-version: "3.11"
+          python-version: '3.11'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet jdatetime
+
+      - name: Build APK (Non-Interactive)
+        env:
+          CI: "true"
+        run: |
+          # ارسال خودکار پاسخ مثبت در صورت نیاز به دانلود ابزارها
+          yes | flet build apk --project . -v || flet build apk -v
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Verona-App-APK
           path: |
-            *.apk
-            dist/*.apk
-            output/*.apk
             build/apk/*.apk
-          if-no-files-found: ignore
+            dist/*.apk
+            build/*.apk
+            **/*.apk
+          if-no-files-found: warn
