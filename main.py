@@ -24,7 +24,11 @@ POOL_SLOTS = [
 
 BASE_DATE = jdatetime.date(1405, 7, 1)
 ROOF_START_UNIT = 5
-POOL_START_UNIT = 4
+
+# مبنای استخر طبق جدول رسمی: ۲ فروردین ۱۴۰۵ (شنبه) -> سانس ۱ = واحد ۴
+# چرخه روزانه و پیوسته است؛ جمعه‌ها فقط نمایش هماهنگی دارند ولی در چرخش شمارش می‌شوند.
+POOL_BASE_DATE = jdatetime.date(1405, 1, 2)
+POOL_BASE_UNIT = 4
 
 WEEK_DAYS = {
     0: "شنبه",
@@ -54,6 +58,10 @@ MONTH_NAMES = {
 
 def get_day_offset(target_date):
     return (target_date - BASE_DATE).days
+
+
+def get_pool_day_offset(target_date):
+    return (target_date - POOL_BASE_DATE).days
 
 
 def get_unit(start_unit, offset):
@@ -112,7 +120,7 @@ def main(page: ft.Page):
 
     def create_card(slot_name, time_str, unit_num, is_pool_friday=False):
         is_mine = (unit_num == selected_unit)
-        
+
         if is_pool_friday:
             badge_bg = "#757575"
             badge_text = "هماهنگی با سرایدار"
@@ -186,7 +194,6 @@ def main(page: ft.Page):
         m_name = MONTH_NAMES[current_date.month]
         date_title.value = f"📅 {d_name} {current_date.day} {m_name} {current_date.year}"
 
-        offset = get_day_offset(current_date)
         is_friday = (current_date.weekday() == 6)
 
         slots_column.controls.clear()
@@ -197,7 +204,7 @@ def main(page: ft.Page):
             pool_tab_btn.bgcolor = "#eceff1"
             pool_tab_btn.content.color = "#37474f"
 
-            roof_first = get_unit(ROOF_START_UNIT, offset)
+            roof_first = get_unit(ROOF_START_UNIT, get_day_offset(current_date))
             for i, slot in enumerate(ROOF_SLOTS):
                 u_num = get_unit(roof_first, i)
                 slots_column.controls.append(create_card(slot[0], slot[1], u_num))
@@ -206,6 +213,8 @@ def main(page: ft.Page):
             pool_tab_btn.content.color = "#ffffff"
             roof_tab_btn.bgcolor = "#eceff1"
             roof_tab_btn.content.color = "#37474f"
+
+            pool_first = get_unit(POOL_BASE_UNIT, get_pool_day_offset(current_date))
 
             if is_friday:
                 slots_column.controls.append(
@@ -221,11 +230,12 @@ def main(page: ft.Page):
                     )
                 )
                 for slot in POOL_SLOTS:
-                    slots_column.controls.append(create_card(slot[0], slot[1], None, is_pool_friday=True))
+                    slots_column.controls.append(
+                        create_card(slot[0], slot[1], None, is_pool_friday=True)
+                    )
             else:
-                pool_first = get_unit(POOL_START_UNIT, offset)
                 for i, slot in enumerate(POOL_SLOTS):
-                    u_num = get_unit(pool_first, i % 6)
+                    u_num = get_unit(pool_first, i)
                     slots_column.controls.append(create_card(slot[0], slot[1], u_num))
 
         page.update()
