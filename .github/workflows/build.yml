@@ -15,7 +15,6 @@ jobs:
         uses: flet-dev/flet-build-action@v1
         with:
           target: apk
-          # تنظیمات نسخه پایتون (نسخه ۳.۱۱ پایدار است)
           runner-python-version: "3.11"
           bundled-python-version: "3.11"
 
@@ -23,4 +22,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Verona-App-APK
-          path: output/apk/*.apk
+          path: |
+            *.apk
+            dist/*.apk
+            output/*.apk
+            build/apk/*.apk
+          if-no-files-found: ignore
