@@ -1,8 +1,21 @@
 import flet as ft
 import jdatetime
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+import requests
+import json
 
-# بازه‌های زمانی
+# ----------------- تنظیمات Supabase -----------------
+SUPABASE_URL = "https://mwebsknajlbrruejattl.supabase.co"
+GAPGPTMASKTOKENilzdg4nkycX0X = "GAPGPTMASKTOKENilzdg4nkycX1X"
+
+HEADERS = {
+    "apikey": GAPGPTMASKTOKENilzdg4nkycX2X,
+    "Authorization": f"Bearer {GAPGPTMASKTOKENilzdg4nkycX3X}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation"
+}
+
+# ----------------- برنامه‌های ثابت نوبت‌ها -----------------
 ROOF_SLOTS = [
     ("سانس ۱", "09:00 الی 10:45"),
     ("سانس ۲", "11:00 الی 12:45"),
@@ -13,20 +26,20 @@ ROOF_SLOTS = [
 ]
 
 POOL_SLOTS = [
-    ("سانس ۱", "08:00 الی 09:30"),
-    ("سانس ۲", "10:00 الی 11:30"),
-    ("سانس ۳", "13:00 الی 14:30"),
-    ("سانس ۴", "15:00 الی 16:30"),
-    ("سانس ۵", "17:00 الی 18:30"),
-    ("سانس ۶", "19:00 الی 20:30"),
-    ("سانس ۷", "21:00 الی 22:30"),
+    ("سانس ۱", "08:00", "09:30"),
+    ("سانس ۲", "10:00", "11:30"),  # شناور در جمعه: پایان انتخابی بین 11:30 تا 12:45
+    ("سانس ۳", "13:00", "14:30"),  # ثابت در جمعه
+    ("سانس ۴", "15:00", "16:30"),
+    ("سانس ۵", "17:00", "18:30"),
+    ("سانس ۶", "19:00", "20:30"),
+    ("سانس ۷", "21:00", "22:30"),
 ]
+
+SLOT2_FRIDAY_END_OPTIONS = ["11:30", "11:45", "12:00", "12:15", "12:30", "12:45"]
 
 BASE_DATE = jdatetime.date(1405, 7, 1)
 ROOF_START_UNIT = 5
 
-# مبنای استخر طبق جدول رسمی: ۲ فروردین ۱۴۰۵ (شنبه) -> سانس ۱ = واحد ۴
-# چرخه روزانه و پیوسته است؛ جمعه‌ها فقط نمایش هماهنگی دارند ولی در چرخش شمارش می‌شوند.
 POOL_BASE_DATE = jdatetime.date(1405, 1, 2)
 POOL_BASE_UNIT = 4
 
@@ -55,146 +68,300 @@ MONTH_NAMES = {
     12: "اسفند",
 }
 
-
 def get_day_offset(target_date):
     return (target_date - BASE_DATE).days
-
 
 def get_pool_day_offset(target_date):
     return (target_date - POOL_BASE_DATE).days
 
-
 def get_unit(start_unit, offset):
     return ((start_unit - 1 + offset) % 6) + 1
 
-
-# توابع سازگاری برای تمام نسخه‌های Flet
-def get_alignment_center():
+# ارتباط با دیتابیس
+def db_verify_unit(phone, code):
     try:
-        return ft.Alignment(0, 0)
-    except Exception:
-        return None
+        url = f"{SUPABASE_URL}/rest/v1/rpc/check_unit_login"
+        payload = {"p_phone": phone, "p_code": code}
+        res = requests.post(url, headers=HEADERS, json=payload, timeout=6)
+        if res.status_code == 200:
+            val = res.json()
+            if val is not None:
+                return int(val)
+    except Exception as e:
+        print("Auth error:", e)
+    return None
 
-
-def get_border_all(width, color):
+def db_get_friday_reservations(date_str):
     try:
-        return ft.border.all(width, color)
-    except Exception:
-        try:
-            return ft.Border.all(width, color)
-        except Exception:
-            return None
+        url = f"{SUPABASE_URL}/rest/v1/pool_reservations?target_date=eq.{date_str}&select=*"
+        res = requests.get(url, headers=HEADERS, timeout=6)
+        if res.status_code == 200:
+            items = res.json()
+            now_utc = datetime.now(timezone.utc)
+            for it in items:
+                if it.get("status") == "pending":
+                    c_time = datetime.fromisoformat(it["created_at"].replace("Z", "+00:00"))
+                    if (now_utc - c_time) >= timedelta(minutes=15):
+                        it["status"] = "confirmed"
+                        try:
+                            up_url = f"{SUPABASE_URL}/rest/v1/pool_reservations?id=eq.{it['id']}"
+                            requests.patch(up_url, headers=HEADERS, json={"status": "confirmed"}, timeout=3)
+                        except Exception:
+                            pass
+            return {item["slot_index"]: item for item in items}
+    except Exception as e:
+        print("Fetch reservations error:", e)
+    return {}
 
+def db_book_slot(date_str, slot_idx, slot_name, start_t, end_t, unit_no, phone):
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/pool_reservations"
+        payload = {
+            "target_date": date_str,
+            "slot_index": slot_idx,
+            "slot_title": slot_name,
+            "start_time": start_t,
+            "end_time": end_t,
+            "unit_number": unit_no,
+            "phone_number": phone,
+            "status": "pending"
+        }
+        res = requests.post(url, headers=HEADERS, json=payload, timeout=6)
+        if res.status_code in [200, 201]:
+            return True, "رزرو با موفقیت انجام شد و نوبت قفل گردید."
+        elif res.status_code == 409:
+            return False, "این سانس لحظاتی پیش توسط واحد دیگری رزرو شد!"
+        else:
+            return False, f"خطا در ثبت: {res.text}"
+    except Exception as e:
+        return False, f"خطای ارتباط: {e}"
 
 def main(page: ft.Page):
     page.title = "نوبت‌بندی مشاعات ورونا"
-    page.rtl = True
-    page.padding = 16
-    page.scroll = "auto"
+    page.scroll = "adaptive"
 
     current_date = jdatetime.date.today()
-    selected_unit = 1
-    current_tab = "roof"
+    current_tab = "pool"
+
+    logged_in_unit = None
+    logged_in_phone = None
+
+    saved_phone = page.client_storage.get("v_phone")
+    saved_unit = page.client_storage.get("v_unit")
+    if saved_unit and saved_phone:
+        logged_in_unit = int(saved_unit)
+        logged_in_phone = str(saved_phone)
 
     date_title = ft.Text(size=16, weight="bold", color="#0d47a1")
     slots_column = ft.Column(spacing=10)
-    unit_buttons_row = ft.Row(alignment="center", spacing=6)
+    auth_status_text = ft.Text(size=13, weight="bold")
 
-    # دکمه‌های تب بالا
     roof_tab_btn = ft.Container(
-        content=ft.Text("🌿 پشت‌بام", size=15, weight="bold", color="#ffffff"),
-        bgcolor="#1565c0",
-        padding=10,
-        border_radius=10,
-        alignment=get_alignment_center(),
-        width=130,
-    )
-    pool_tab_btn = ft.Container(
-        content=ft.Text("🏊‍♂️ استخر", size=15, weight="bold", color="#37474f"),
+        content=ft.Text("🌿 پشت‌بام", size=15, weight="bold", color="#37474f"),
         bgcolor="#eceff1",
         padding=10,
         border_radius=10,
-        alignment=get_alignment_center(),
+        alignment=ft.alignment.center,
+        width=130,
+    )
+    pool_tab_btn = ft.Container(
+        content=ft.Text("🏊‍♂️ استخر", size=15, weight="bold", color="#ffffff"),
+        bgcolor="#1565c0",
+        padding=10,
+        border_radius=10,
+        alignment=ft.alignment.center,
         width=130,
     )
 
-    def create_card(slot_name, time_str, unit_num, is_pool_friday=False):
-        is_mine = (unit_num == selected_unit)
+    def show_snack(msg, is_error=False):
+        sb = ft.SnackBar(
+            content=ft.Text(msg, color="#ffffff"),
+            bgcolor="#c62828" if is_error else "#2e7d32"
+        )
+        page.overlay.append(sb)
+        sb.open = True
+        page.update()
+
+    phone_field = ft.TextField(label="شماره موبایل", text_align="right")
+    code_field = ft.TextField(label="کد اختصاصی واحد", password=True, can_reveal_password=True, text_align="center")
+
+    def submit_login(e):
+        nonlocal logged_in_unit, logged_in_phone
+        p = phone_field.value.strip() if phone_field.value else ""
+        c = code_field.value.strip() if code_field.value else ""
+        if not p or not c:
+            show_snack("لطفاً شماره موبایل و کد اختصاصی را وارد کنید", True)
+            return
+
+        u = db_verify_unit(p, c)
+        if u:
+            logged_in_unit = u
+            logged_in_phone = p
+            page.client_storage.set("v_unit", str(u))
+            page.client_storage.set("v_phone", p)
+            login_dialog.open = False
+            show_snack(f"خوش آمدید! ورود به عنوان واحد {u}")
+            update_view()
+        else:
+            show_snack("شماره موبایل یا کد اختصاصی معتبر نیست.", True)
+
+    login_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("ورود به سیستم نوبت‌دهی ورونا"),
+        content=ft.Column([
+            ft.Text("جهت رزرو سانس‌های جمعه، لطفاً وارد شوید:"),
+            phone_field,
+            code_field
+        ], tight=True, spacing=10),
+        actions=[
+            ft.TextButton("انصراف", on_click=lambda e: setattr(login_dialog, 'open', False) or page.update()),
+            ft.ElevatedButton("ورود و ذخیره", on_click=submit_login, bgcolor="#1565c0", color="#ffffff")
+        ]
+    )
+
+    def open_login_dialog(e=None):
+        page.overlay.append(login_dialog)
+        login_dialog.open = True
+        page.update()
+
+    def logout_user(e):
+        nonlocal logged_in_unit, logged_in_phone
+        logged_in_unit = None
+        logged_in_phone = None
+        page.client_storage.remove("v_unit")
+        page.client_storage.remove("v_phone")
+        show_snack("با موفقیت خارج شدید.")
+        update_view()
+
+    slot2_dropdown = ft.Dropdown(
+        label="ساعت پایان سانس",
+        options=[ft.dropdown.Option(opt) for opt in SLOT2_FRIDAY_END_OPTIONS],
+        value="11:30"
+    )
+
+    def make_reservation(slot_idx, slot_name, start_t, end_t):
+        if not logged_in_unit:
+            open_login_dialog()
+            return
+
+        today = jdatetime.date.today()
+        # رزرو جمعه پیش رو صرفاً از پنجشنبه قبل یا در خود جمعه مجاز است
+        diff = (current_date - today).days
+        if current_date.weekday() != 6 or diff not in [0, 1]:
+            show_snack("رزرو جمعه صرفاً از روز پنج‌شنبه قبل از آن امکان‌پذیر است.", True)
+            return
+
+        date_key = f"{current_date.year:04d}-{current_date.month:02d}-{current_date.day:02d}"
+        ok, msg = db_book_slot(date_key, slot_idx, slot_name, start_t, end_t, logged_in_unit, logged_in_phone)
+        if ok:
+            show_snack(msg)
+            update_view()
+        else:
+            show_snack(msg, True)
+
+    def create_card(slot_name, time_str, unit_num, is_pool_friday=False, res_info=None, slot_idx=None):
+        trailing_control = None
+        card_bg = "#ffffff"
+        border_clr = "#90caf9"
 
         if is_pool_friday:
-            badge_bg = "#757575"
-            badge_text = "هماهنگی با سرایدار"
-            border_color = "#bdbdbd"
-            bg_color = "#f5f5f5"
-        elif is_mine:
-            badge_bg = "#2e7d32"
-            badge_text = f"⭐ نوبت شما (واحد {unit_num})"
-            border_color = "#43a047"
-            bg_color = "#e8f5e9"
+            if res_info:
+                res_unit = res_info["unit_number"]
+                st = res_info.get("status", "pending")
+                display_time = f"{res_info['start_time']} الی {res_info['end_time']}"
+                time_str = display_time
+
+                if st == "confirmed":
+                    b_txt = f"قطعی: واحد {res_unit}"
+                    b_clr = "#2e7d32"
+                    card_bg = "#e8f5e9"
+                else:
+                    b_txt = f"قفل موقت (واحد {res_unit})"
+                    b_clr = "#f57c00"
+                    card_bg = "#fff3e0"
+
+                trailing_control = ft.Container(
+                    content=ft.Text(b_txt, color="#ffffff", size=12, weight="bold"),
+                    bgcolor=b_clr,
+                    padding=6,
+                    border_radius=12
+                )
+            else:
+                if slot_idx == 1:
+                    def on_reserve_slot2(e):
+                        make_reservation(1, slot_name, "10:00", slot2_dropdown.value)
+
+                    trailing_control = ft.Row([
+                        ft.Container(slot2_dropdown, width=110),
+                        ft.ElevatedButton("رزرو نوبت", bgcolor="#1976d2", color="#ffffff", on_click=on_reserve_slot2)
+                    ], spacing=5)
+                elif slot_idx == 2:
+                    def on_reserve_slot3(e):
+                        make_reservation(2, slot_name, "13:00", "14:30")
+
+                    trailing_control = ft.ElevatedButton("رزرو نوبت", bgcolor="#1976d2", color="#ffffff", on_click=on_reserve_slot3)
+                else:
+                    def on_reserve_other(e, s_i=slot_idx, s_n=slot_name):
+                        make_reservation(s_i, s_n, POOL_SLOTS[s_i][1], POOL_SLOTS[s_i][2])
+
+                    trailing_control = ft.ElevatedButton("رزرو نوبت", bgcolor="#1976d2", color="#ffffff", on_click=on_reserve_other)
+
         else:
-            badge_bg = "#1565c0"
-            badge_text = f"واحد {unit_num}"
-            border_color = "#90caf9"
-            bg_color = "#ffffff"
+            is_mine = (unit_num == logged_in_unit) if logged_in_unit else False
+            if is_mine:
+                badge_bg = "#2e7d32"
+                badge_text = f"⭐ نوبت شما (واحد {unit_num})"
+                border_clr = "#43a047"
+                card_bg = "#e8f5e9"
+            else:
+                badge_bg = "#1565c0"
+                badge_text = f"واحد {unit_num}"
+
+            trailing_control = ft.Container(
+                content=ft.Text(badge_text, color="#ffffff", size=13, weight="bold"),
+                bgcolor=badge_bg,
+                padding=8,
+                border_radius=15,
+            )
 
         return ft.Container(
             content=ft.Row(
-                controls=[
+                [
                     ft.Column(
-                        controls=[
+                        [
                             ft.Text(slot_name, size=15, weight="bold"),
                             ft.Text(f"⏰ {time_str}", size=13, color="#616161"),
                         ],
                         spacing=2,
                     ),
-                    ft.Container(
-                        content=ft.Text(badge_text, color="#ffffff", size=13, weight="bold"),
-                        bgcolor=badge_bg,
-                        padding=8,
-                        border_radius=15,
-                    )
+                    trailing_control,
                 ],
                 alignment="spaceBetween",
             ),
-            bgcolor=bg_color,
+            bgcolor=card_bg,
             padding=12,
-            border=get_border_all(1, border_color),
-            border_radius=10,
+            border_radius=12,
+            border=ft.border.all(1, border_clr),
         )
 
-    def on_unit_click(e):
-        nonlocal selected_unit
-        selected_unit = e.control.data
-        render_unit_selector()
-        update_view()
-
-    def render_unit_selector():
-        unit_buttons_row.controls.clear()
-        for u in range(1, 7):
-            is_active = (u == selected_unit)
-            btn = ft.Container(
-                content=ft.Text(
-                    f"واحد {u}",
-                    size=13,
-                    weight="bold",
-                    color="#ffffff" if is_active else "#0d47a1",
-                ),
-                bgcolor="#1976d2" if is_active else "#e3f2fd",
-                border=get_border_all(1, "#1976d2"),
-                padding=8,
-                border_radius=8,
-                data=u,
-                on_click=on_unit_click,
-            )
-            unit_buttons_row.controls.append(btn)
-
     def update_view():
-        nonlocal current_date
         d_name = WEEK_DAYS[current_date.weekday()]
         m_name = MONTH_NAMES[current_date.month]
         date_title.value = f"📅 {d_name} {current_date.day} {m_name} {current_date.year}"
-
         is_friday = (current_date.weekday() == 6)
+
+        if logged_in_unit:
+            auth_status_text.value = f"واحد {logged_in_unit} ({logged_in_phone})"
+            auth_status_text.color = "#2e7d32"
+            auth_action_btn.text = "خروج"
+            auth_action_btn.icon = ft.Icons.LOGOUT
+            auth_action_btn.on_click = logout_user
+        else:
+            auth_status_text.value = "وارد نشده‌اید"
+            auth_status_text.color = "#d32f2f"
+            auth_action_btn.text = "ورود واحد"
+            auth_action_btn.icon = ft.Icons.LOGIN
+            auth_action_btn.on_click = open_login_dialog
 
         slots_column.controls.clear()
 
@@ -208,6 +375,7 @@ def main(page: ft.Page):
             for i, slot in enumerate(ROOF_SLOTS):
                 u_num = get_unit(roof_first, i)
                 slots_column.controls.append(create_card(slot[0], slot[1], u_num))
+
         else:
             pool_tab_btn.bgcolor = "#1565c0"
             pool_tab_btn.content.color = "#ffffff"
@@ -217,26 +385,41 @@ def main(page: ft.Page):
             pool_first = get_unit(POOL_BASE_UNIT, get_pool_day_offset(current_date))
 
             if is_friday:
+                date_key = f"{current_date.year:04d}-{current_date.month:02d}-{current_date.day:02d}"
+                res_dict = db_get_friday_reservations(date_key)
+
                 slots_column.controls.append(
                     ft.Container(
                         content=ft.Text(
-                            "⚠️ جمعه‌ها استخر صرفاً با هماهنگی قبلی با سرایدار قابل استفاده است.",
-                            color="#b71c1c",
-                            size=13,
+                            "📌 جمعه‌ها رزرو استخر از پنج‌شنبه فعال می‌شود. نوبت بلافاصله قفل شده و پس از ۱۵ دقیقه تأیید قطعی می‌گردد.",
+                            color="#0d47a1",
+                            size=12,
                         ),
-                        bgcolor="#ffebee",
+                        bgcolor="#e3f2fd",
                         padding=10,
                         border_radius=8,
                     )
                 )
-                for slot in POOL_SLOTS:
-                    slots_column.controls.append(
-                        create_card(slot[0], slot[1], None, is_pool_friday=True)
+
+                for idx, slot in enumerate(POOL_SLOTS):
+                    s_name = slot[0]
+                    base_time = f"{slot[1]} الی {slot[2]}"
+                    res_item = res_dict.get(idx)
+                    card = create_card(
+                        slot_name=s_name,
+                        time_str=base_time,
+                        unit_num=None,
+                        is_pool_friday=True,
+                        res_info=res_item,
+                        slot_idx=idx
                     )
+                    slots_column.controls.append(card)
+
             else:
                 for i, slot in enumerate(POOL_SLOTS):
                     u_num = get_unit(pool_first, i)
-                    slots_column.controls.append(create_card(slot[0], slot[1], u_num))
+                    time_label = f"{slot[1]} الی {slot[2]}"
+                    slots_column.controls.append(create_card(slot[0], time_label, u_num))
 
         page.update()
 
@@ -258,7 +441,8 @@ def main(page: ft.Page):
     roof_tab_btn.on_click = lambda e: set_tab("roof")
     pool_tab_btn.on_click = lambda e: set_tab("pool")
 
-    # دکمه‌های ناوبری تاریخ
+    auth_action_btn = ft.ElevatedButton()
+
     btn_prev = ft.Container(
         content=ft.Text("⬅️ روز قبل", size=13, color="#ffffff"),
         bgcolor="#1e88e5",
@@ -281,42 +465,29 @@ def main(page: ft.Page):
         on_click=lambda e: change_date(1),
     )
 
-    render_unit_selector()
-
     page.add(
         ft.Row(
             [ft.Text("🏢 نوبت‌بندی مشاعات ورونا", size=18, weight="bold", color="#0d47a1")],
             alignment="center",
         ),
+        ft.Row(
+            [auth_status_text, auth_action_btn],
+            alignment="spaceBetween"
+        ),
         ft.Divider(),
-        ft.Text("واحد خود را انتخاب کنید:", size=13, color="#424242"),
-        unit_buttons_row,
-        ft.Container(height=5),
+        ft.Container(content=date_title, alignment=ft.alignment.center),
+        ft.Row([btn_prev, btn_today, btn_next], alignment="center", spacing=8),
         ft.Container(
-            content=ft.Column([
-                ft.Container(content=date_title, alignment=get_alignment_center()),
-                ft.Row([btn_prev, btn_today, btn_next], alignment="center", spacing=8),
-            ]),
+            content=ft.Row([roof_tab_btn, pool_tab_btn], alignment="center", spacing=10),
+            padding=5,
             bgcolor="#e3f2fd",
-            padding=10,
-            border_radius=10,
+            border_radius=12,
         ),
         ft.Container(height=10),
-        ft.Row([roof_tab_btn, pool_tab_btn], alignment="center", spacing=10),
-        ft.Container(height=5),
         slots_column,
     )
 
     update_view()
 
-
 if __name__ == "__main__":
-    try:
-        ft.run(main)
-    except AttributeError:
-        try:
-            ft.app(target=main)
-        except AttributeError:
-            import flet.app as flet_app
-
-            flet_app.app(target=main)
+    ft.app(target=main)
